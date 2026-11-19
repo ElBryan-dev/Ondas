@@ -2,7 +2,7 @@
 // - Catálogo de YouTube Music con youtubei.js; las peticiones salen por HTTP nativo (sin CORS).
 // - Devuelve los mismos formatos JSON que el servidor Python, así la interfaz no cambia.
 import { Capacitor, registerPlugin } from '@capacitor/core';
-import { Innertube } from 'youtubei.js/web';
+import { Innertube, YTNodes } from 'youtubei.js/web';
 
 const Native = registerPlugin('OndasNative');
 const MediaSession = registerPlugin('MediaSession');
@@ -76,6 +76,21 @@ function yt() {
   return ytP;
 }
 
+// Si la sesión falla (p. ej. tras horas en segundo plano) se crea otra y se reintenta una vez
+async function withRetry(fn) {
+  try {
+    return await fn(await yt());
+  } catch (e) {
+    console.warn('[ondas] reintentando', e);
+    ytP = null;
+    return await fn(await yt());
+  }
+}
+const secsOf = (txt) => {
+  const m = String(txt || '').match(/(\d+):(\d{2})(?::(\d{2}))?/);
+  if (!m) return 0;
+  return m[3] ? (+m[1]) * 3600 + (+m[2]) * 60 + (+m[3]) : (+m[1]) * 60 + (+m[2]);
+};
 const T = (x) => {
   if (x == null) return '';
   if (typeof x === 'string') return x;
@@ -150,16 +165,116 @@ const shelfItems = (search) => {
   return sh ? sh.contents : [];
 };
 
+function cardTop(sh) {
+  const p = (sh.on_tap && sh.on_tap.payload) || {};
+  const sub = T(sh.subtitle);
+  const parts = sub.split('•').map((x) => x.trim()).filter(Boolean);
+  const thumb = thumbOf(sh.thumbnail);
+  const title = T(sh.title);
+  if (p.videoId) {
+    const artists = runsWithIds(sh.subtitle);
+    return { kind: 'song', id: p.videoId, title, artists, artist: artists.map((a) => a.name).join(', ') || parts[1] || '', album: '', albumId: null, duration: secsOf(parts[parts.length - 1]), thumb, explicit: false, label: parts[0] || 'Canción' };
+  }
+  const bid = p.browseId || '';
+  if (bid.startsWith('UC')) return { kind: 'artist', id: bid, name: title, thumb, subs: parts[1] || null, label: parts[0] || 'Artista' };
+  if (bid.startsWith('MPRE')) return { kind: 'album', id: bid, title, artist: parts[1] || '', year: yearOf(sub), type: parts[0] || 'Álbum', thumb, label: parts[0] || 'Álbum' };
+  if (bid.startsWith('VL')) return { kind: 'playlist', id: bid.slice(2), title, sub: parts.slice(1).join(' · '), thumb, label: 'Playlist' };
+  return null;
+}
+
 async function search(q) {
-  const c = await yt();
-  const run = (type) => c.music.search(q, { type }).then(shelfItems).catch(() => []);
-  const [songs, albums, artists, playlists] = await Promise.all([run('song'), run('album'), run('artist'), run('playlist')]);
-  const pick = (arr, kind) => arr.map(itemFrom).filter((x) => x && x.kind === kind).map(strip);
-  return { songs: pick(songs, 'song').slice(0, 30), albums: pick(albums, 'album').slice(0, 20), artists: pick(artists, 'artist').slice(0, 12), playlists: pick(playlists, 'playlist').slice(0, 12) };
+  return withRetry(async (c) => {
+    const out = { top: null, songs: [], videos: [], albums: [], artists: [], playlists: [], corrected: null };
+    const seen = new Set();
+    const add = (x, isVideo) => {
+      if (!x || seen.has(x.kind + x.id)) return;
+      seen.add(x.kind + x.id);
+      const { kind, ...rest } = x;
+      if (kind === 'song') (isVideo ? out.videos : out.songs).push(rest);
+      else if (kind === 'album') out.albums.push(rest);
+      else if (kind === 'artist') out.artists.push(rest);
+      else if (kind === 'playlist') out.playlists.push(rest);
+    };
+    const s = await c.music.search(q);
+    try {
+      const sr = s.showing_results_for;
+      if (sr) out.corrected = T(sr.corrected_query);
+      const dy = s.did_you_mean;
+      if (dy && !out.corrected) out.didYouMean = T(dy.corrected_query);
+    } catch (e) { /* noop */ }
+    for (const sh of s.contents || []) {
+      if (sh.type === 'MusicCardShelf') {
+        const top = cardTop(sh);
+        if (top) {
+          out.top = top;
+          seen.add(top.kind + top.id);
+        }
+        for (const it of sh.contents || []) add(itemFrom(it), it.item_type === 'video');
+      } else if (Array.isArray(sh.contents)) {
+        for (const it of sh.contents) add(itemFrom(it), it.item_type === 'video');
+      }
+    }
+    if (out.songs.length < 6) {
+      try {
+        const f = await c.music.search(q, { type: 'song' });
+        for (const it of shelfItems(f)) add(itemFrom(it), false);
+      } catch (e) { /* noop */ }
+    }
+    if (!out.top) {
+      const s0 = out.songs[0] || out.videos[0];
+      if (out.artists[0] && (!s0 || out.artists[0].name.toLowerCase() === q.trim().toLowerCase())) out.top = { kind: 'artist', ...out.artists[0], label: 'Artista' };
+      else if (s0) out.top = { kind: 'song', ...s0, label: 'Canción' };
+    }
+    if (out.top && out.top.kind === 'song') out.songs = out.songs.filter((x) => x.id !== out.top.id);
+    out.songs = out.songs.slice(0, 40);
+    return out;
+  });
+}
+
+async function suggest(q) {
+  return withRetry(async (c) => {
+    const secs = await c.music.getSearchSuggestions(q);
+    const items = [];
+    const quick = [];
+    for (const sec of secs || []) {
+      for (const x of sec.contents || []) {
+        if (x.suggestion) items.push(T(x.suggestion));
+        else {
+          const it = itemFrom(x);
+          if (it) quick.push(it);
+        }
+      }
+    }
+    return { items: items.slice(0, 8), quick: quick.slice(0, 4) };
+  });
+}
+
+async function charts() {
+  return withRetry(async (c) => {
+    const ep = new YTNodes.NavigationEndpoint({ browseEndpoint: { browseId: 'FEmusic_charts' } });
+    const r = await ep.call(c.actions, { client: 'YTMUSIC', parse: true });
+    const shelves = r && r.contents_memo ? r.contents_memo.getType(YTNodes.MusicCarouselShelf) : [];
+    const out = { songs: [], videos: [], artists: [], shelves: [] };
+    for (const sh of shelves || []) {
+      const title = T(sh.header && sh.header.title);
+      const items = (sh.contents || []).map(itemFrom).filter(Boolean);
+      if (!items.length) continue;
+      const k = items[0].kind;
+      if (k === 'song') {
+        const list = items.filter((x) => x.kind === 'song').map(strip);
+        if (/v[ií]deo/i.test(title)) { if (!out.videos.length) out.videos = list; }
+        else if (!out.songs.length) out.songs = list;
+        else out.videos.push(...list);
+      } else if (k === 'artist' && !out.artists.length) out.artists = items.filter((x) => x.kind === 'artist').map(strip);
+      else out.shelves.push({ title, items: items.slice(0, 20) });
+    }
+    if (!out.songs.length && out.videos.length) { out.songs = out.videos; out.videos = []; }
+    return out;
+  });
 }
 
 async function album(id) {
-  const c = await yt();
+  return withRetry(async (c) => {
   const a = await c.music.getAlbum(id);
   const h = a.header || {};
   const title = T(h.title);
@@ -169,10 +284,11 @@ async function album(id) {
   const sub = T(h.subtitle);
   const tracks = (a.contents || []).map((t) => songFrom(t, { album: title, albumId: id, thumb, artists: artists.length ? artists : [{ name: artistName, id: null }] })).filter(Boolean);
   return { id, title, artist: artistName, artists, year: h.year || yearOf(sub), type: (sub.split('•')[0] || 'Álbum').trim() || 'Álbum', thumb, duration: h.total_duration || T(h.second_subtitle).split('•').pop().trim() || null, tracks };
+  });
 }
 
 async function artist(id) {
-  const c = await yt();
+  return withRetry(async (c) => {
   const a = await c.music.getArtist(id);
   const h = a.header || {};
   const out = { id, name: T(h.title), thumb: thumbOf(h.thumbnail || h.foreground_thumbnail), description: T(h.description), subs: null, songs: [], albums: [], singles: [], related: [] };
@@ -190,19 +306,22 @@ async function artist(id) {
     } else if (kind === 'artist' && !out.related.length) out.related = items.filter((x) => x.kind === 'artist').map(strip);
   }
   return out;
+  });
 }
 
 async function playlist(id) {
-  const c = await yt();
+  return withRetry(async (c) => {
   const p = await c.music.getPlaylist(id);
   const h = p.header || {};
   return { id, title: T(h.title), sub: T(h.strapline_text_one) || T(h.subtitle), thumb: thumbOf(h.thumbnail || h.thumbnails || p.background), tracks: (p.contents || []).map((t) => songFrom(t)).filter(Boolean) };
+  });
 }
 
 async function radio(vid) {
-  const c = await yt();
+  return withRetry(async (c) => {
   const panel = await c.music.getUpNext(vid, true);
   return { tracks: (panel.contents || []).map((t) => songFrom(t)).filter(Boolean) };
+  });
 }
 
 async function lyrics(vid) {
@@ -217,7 +336,7 @@ async function lyrics(vid) {
 }
 
 async function home() {
-  const c = await yt();
+  return withRetry(async (c) => {
   const hf = await c.music.getHomeFeed();
   const shelves = [];
   for (const s of hf.sections || []) {
@@ -226,6 +345,7 @@ async function home() {
     if (title && items.length) shelves.push({ title, items });
   }
   return { shelves };
+  });
 }
 
 async function fetchJSON(url) {
@@ -246,6 +366,8 @@ async function api(path) {
   try {
     switch (p[1]) {
       case 'search': return await search(u.searchParams.get('q') || '');
+      case 'suggest': return await suggest(u.searchParams.get('q') || '');
+      case 'charts': return await charts();
       case 'album': return await album(p[2]);
       case 'artist': return await artist(p[2]);
       case 'playlist': return await playlist(p[2]);
