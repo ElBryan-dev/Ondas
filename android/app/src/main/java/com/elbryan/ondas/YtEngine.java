@@ -50,7 +50,7 @@ public final class YtEngine {
 
     public static final OkHttpClient HTTP = new OkHttpClient.Builder()
             .connectTimeout(20, TimeUnit.SECONDS)
-            .readTimeout(40, TimeUnit.SECONDS)
+            .readTimeout(20, TimeUnit.SECONDS)
             .followRedirects(true)
             .retryOnConnectionFailure(true)
             .build();
@@ -231,45 +231,130 @@ public final class YtEngine {
                 }
                 h.put("Content-Range", "bytes " + start + "-" + end + "/" + r.size);
                 h.put("Content-Length", String.valueOf(end - start + 1));
-                return new WebResourceResponse(r.mime, null, 206, "Partial Content", h, up.body().byteStream());
+                return new WebResourceResponse(r.mime, null, 206, "Partial Content", h, new RangeStream(id, r, start, end, up));
             }
             // Sin Range (descargas): archivo completo, por tramos
             if (r.size > 0) h.put("Content-Length", String.valueOf(r.size));
-            return new WebResourceResponse(r.mime, null, 200, "OK", h, new ChunkedStream(r));
+            return new WebResourceResponse(r.mime, null, 200, "OK", h, new ChunkedStream(id, r));
         } catch (Exception e) {
             Log.e(TAG, "stream " + id, e);
             return error(503, "Error al cargar el audio");
         }
     }
 
-    /** Lee el archivo completo pidiendo tramos consecutivos. */
-    static final class ChunkedStream extends InputStream {
-        private final Resolved r;
-        private long pos = 0;
-        private InputStream cur;
+    /**
+     * Entrega exactamente los bytes [start, end]. Si la conexión se corta a mitad
+     * (o el enlace caduca), vuelve a pedir lo que falta desde donde se quedó.
+     */
+    static final class RangeStream extends InputStream {
+        private final String id;
+        private Resolved r;
+        private long pos;
+        private final long end;
         private Response resp;
+        private InputStream in;
+        private int retries = 0;
 
-        ChunkedStream(Resolved r) {
+        RangeStream(String id, Resolved r, long start, long end, Response first) {
+            this.id = id;
             this.r = r;
-        }
-
-        private boolean next() throws IOException {
-            closeCur();
-            if (r.size > 0 && pos >= r.size) return false;
-            long end = r.size > 0 ? Math.min(pos + CHUNK, r.size) - 1 : pos + CHUNK - 1;
-            resp = fetchRange(r, pos, end);
-            if (!resp.isSuccessful() || resp.body() == null) {
-                closeCur();
-                return false;
+            this.pos = start;
+            this.end = end;
+            if (first != null && first.body() != null) {
+                resp = first;
+                in = first.body().byteStream();
             }
-            cur = resp.body().byteStream();
-            return true;
         }
 
-        private void closeCur() {
+        private static void nap(long ms) {
+            try {
+                Thread.sleep(ms);
+            } catch (InterruptedException ignored) {
+                Thread.currentThread().interrupt();
+            }
+        }
+
+        private void closeUp() {
             if (resp != null) resp.close();
             resp = null;
-            cur = null;
+            in = null;
+        }
+
+        private void reopen() throws IOException {
+            closeUp();
+            while (true) {
+                if (++retries > 5) throw new IOException("Demasiados reintentos");
+                try {
+                    Response up = fetchRange(r, pos, end);
+                    if (up.code() == 403 || up.code() == 410) {
+                        up.close();
+                        try {
+                            r = resolve(id, true);
+                        } catch (Exception e) {
+                            nap(500L * retries);
+                        }
+                        continue;
+                    }
+                    if (!up.isSuccessful() || up.body() == null) {
+                        up.close();
+                        nap(500L * retries);
+                        continue;
+                    }
+                    resp = up;
+                    in = up.body().byteStream();
+                    return;
+                } catch (IOException e) {
+                    Log.w(TAG, "reintento " + retries + " en " + pos, e);
+                    nap(500L * retries);
+                }
+            }
+        }
+
+        @Override
+        public int read() throws IOException {
+            byte[] b = new byte[1];
+            int n = read(b, 0, 1);
+            return n <= 0 ? -1 : (b[0] & 0xff);
+        }
+
+        @Override
+        public int read(byte[] b, int off, int len) throws IOException {
+            if (pos > end) return -1;
+            len = (int) Math.min(len, end - pos + 1);
+            while (true) {
+                if (in == null) reopen();
+                try {
+                    int n = in.read(b, off, len);
+                    if (n > 0) {
+                        pos += n;
+                        return n;
+                    }
+                    if (pos > end) return -1;
+                    closeUp(); // terminó antes de tiempo: pedir el resto
+                } catch (IOException e) {
+                    Log.w(TAG, "corte en " + pos, e);
+                    closeUp();
+                    if (retries >= 5) throw e;
+                }
+            }
+        }
+
+        @Override
+        public void close() {
+            closeUp();
+        }
+    }
+
+    /** Lee el archivo completo (descargas) por tramos, con reintentos. */
+    static final class ChunkedStream extends InputStream {
+        private final String id;
+        private final Resolved r;
+        private long pos = 0;
+        private RangeStream cur;
+
+        ChunkedStream(String id, Resolved r) {
+            this.id = id;
+            this.r = r;
         }
 
         @Override
@@ -282,20 +367,25 @@ public final class YtEngine {
         @Override
         public int read(byte[] b, int off, int len) throws IOException {
             while (true) {
-                if (cur == null && !next()) return -1;
+                if (r.size <= 0) throw new IOException("Tamaño desconocido");
+                if (pos >= r.size) return -1;
+                if (cur == null) {
+                    long e = Math.min(pos + CHUNK, r.size) - 1;
+                    cur = new RangeStream(id, r, pos, e, null);
+                }
                 int n = cur.read(b, off, len);
                 if (n > 0) {
                     pos += n;
                     return n;
                 }
-                closeCur();
-                if (r.size <= 0) return -1;
+                cur.close();
+                cur = null;
             }
         }
 
         @Override
         public void close() {
-            closeCur();
+            if (cur != null) cur.close();
         }
     }
 

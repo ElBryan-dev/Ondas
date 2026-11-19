@@ -614,10 +614,10 @@ const audio=new Audio();audio.preload='auto';audio.setAttribute('playsinline',''
 let curURL=null,loadToken=0;
 async function loadTrack(i,autoplay=true,startAt=0){
  if(i<0||i>=state.queue.length)return;state.qi=i;const t=cur();if(!t)return;const tok=++loadToken;
- audio.crossOrigin='anonymous';altTried=false;
+ audio.crossOrigin='anonymous';altTried=false;lastGood=startAt||0;lastGoodAt=Date.now();if(rec.id!==t.id)rec={id:t.id,n:0};
  if(isRemote(t)&&!t.offline){
   if(t.source==='yt'&&!state.api){toast('Conecta el servidor de catálogo en Ajustes para escuchar YouTube Music');updateUI();return}
-  if(curURL){URL.revokeObjectURL(curURL);curURL=null}audio.src=t.source==='yt'?streamURL(t):(NATIVE?iaProxyURL(t):iaURL(t));
+  if(curURL){URL.revokeObjectURL(curURL);curURL=null}audio.src=t.source==='yt'?streamURL(t):(NATIVE?iaProxyURL(t):iaURL(t));wantPlay=autoplay;
  }else{
  let blob=await getAudio(t.id);if(tok!==loadToken)return;
  if(!blob){toast('No se encontró el archivo de esta canción');return}
@@ -648,9 +648,29 @@ audio.addEventListener('ended',()=>{if(sleepEOT){sleepEOT=false;clearSleep();upd
 audio.addEventListener('play',()=>{updateUI();if(NMS)NMS.setPlaybackState({playbackState:'playing'}).catch(()=>{});if('mediaSession'in navigator)navigator.mediaSession.playbackState='playing'});
 audio.addEventListener('pause',()=>{updateUI();saveSession();if(NMS)NMS.setPlaybackState({playbackState:'paused'}).catch(()=>{});if('mediaSession'in navigator)navigator.mediaSession.playbackState='paused'});
 audio.addEventListener('error',async()=>{const t=cur();if(!t||!audio.error||audio.error.code===1||!audio.getAttribute('src'))return;
- if(t.source==='ia'&&!t.offline&&!altTried){altTried=true;if(state.api)audio.src=iaProxyURL(t);else{audio.removeAttribute('crossorigin');audio.src=iaURL(t);if(actx)toast('Sin servidor, el ecualizador no puede procesar esta fuente')}doPlay();return}
- if(t.source==='yt'&&!t.offline&&state.api){let msg='No se pudo reproducir: '+t.title;try{const r=await fetch(streamURL(t),{method:'HEAD'});if(!r.ok){const j=await fetch(streamURL(t),{headers:{Range:'bytes=0-1'}}).then(x=>x.json()).catch(()=>({}));if(j.detail)msg=j.detail;if(r.status===404&&state.qi<state.queue.length-1){toast(msg+' · saltando');setTimeout(()=>next(),1200);return}}}catch(e){}toast(msg,4000);return}
+ if(t.source==='ia'&&!t.offline&&!altTried&&!NATIVE){altTried=true;if(state.api)audio.src=iaProxyURL(t);else{audio.removeAttribute('crossorigin');audio.src=iaURL(t);if(actx)toast('Sin servidor, el ecualizador no puede procesar esta fuente')}doPlay();return}
+ if(isRemote(t)&&!t.offline){recoverPlayback(t,'error');return}
  toast('No se pudo reproducir: '+t.title)});
+/* Recuperación automática: si el audio se corta, se recarga y sigue desde el mismo segundo */
+let rec={id:null,n:0,at:0},lastGood=0,lastGoodAt=0,wantPlay=false;
+function remoteSrc(t){return t.source==='yt'?streamURL(t):(NATIVE||state.api?iaProxyURL(t):iaURL(t))}
+async function recoverPlayback(t,why){
+ if(rec.id!==t.id)rec={id:t.id,n:0};
+ const pos=Math.max(audio.currentTime||0,lastGood);
+ if(rec.n===0&&pos<1&&t.source==='yt'){
+  try{const r=await fetch(streamURL(t),{headers:{Range:'bytes=0-1'}});if(r.status===404){const j=await r.json().catch(()=>({}));toast((j.detail||'Canción no disponible')+' · saltando',2500);if(state.qi<state.queue.length-1)setTimeout(()=>next(),900);return}}catch(e){}}
+ if(rec.n>=4){toast('No se pudo continuar “'+t.title+'”. Pasando a la siguiente…',2500);rec.n=0;if(state.qi<state.queue.length-1)setTimeout(()=>next(true),900);return}
+ rec.n++;rec.at=pos;console.warn('[ondas] recuperando',why,t.title,pos,rec.n);
+ if(rec.n>1)toast('Reconectando…',1500);
+ const src=remoteSrc(t);audio.src=src+(src.includes('?')?'&':'?')+'r='+Date.now();
+ audio.addEventListener('loadedmetadata',()=>{try{if(pos>0)audio.currentTime=Math.max(0,pos-0.5)}catch(e){}},{once:true});
+ doPlay()}
+audio.addEventListener('playing',()=>{wantPlay=true});
+audio.addEventListener('pause',()=>{if(!audio.ended)wantPlay=false});
+audio.addEventListener('timeupdate',()=>{if(audio.currentTime>0){lastGood=audio.currentTime;lastGoodAt=Date.now();if(rec.n&&audio.currentTime>rec.at+15)rec.n=0}});
+// vigilante: si debería sonar pero el tiempo no avanza en 20 s, reconectar
+setInterval(()=>{const t=cur();if(!t||!isRemote(t)||t.offline||!wantPlay||audio.paused||audio.ended)return;
+ if(lastGoodAt&&Date.now()-lastGoodAt>20000&&audio.readyState<3){lastGoodAt=Date.now();recoverPlayback(t,'stall')}},5000);
 let lastPos=0;
 audio.addEventListener('timeupdate',()=>{const d=audio.duration||(cur()||{}).duration||0,t=audio.currentTime;const p=d?t/d:0;
  $('#mBar').style.width=(p*100)+'%';if(!seeking){const s=$('#seek');s.value=Math.round(p*1000);s.style.setProperty('--p',(p*100)+'%');$('#tCur').textContent=fmt(t)}$('#tDur').textContent=fmt(d);
@@ -1045,7 +1065,11 @@ async function iaFlex(q,yt){const res=new Map();const addAll=l=>(l||[]).forEach(
   if(ar.length)addAll(await iaSearch('',15,`creator:(${ar.join(' AND ')}) AND ${IAF}`).catch(()=>[]));
   if(ti.length)addAll(await iaSearch('',15,`title:(${ti.join(' AND ')}) AND ${IAF}`).catch(()=>[]))}
  if(!res.size&&W.length){const fz=W.filter(w=>w.length>3).map(w=>w+'~1');if(fz.length)addAll(await iaSearch('',15,`(${fz.join(' AND ')}) AND ${IAF}`).catch(()=>[]))}
- return [...res.values()].slice(0,30)}
+ return iaRelevant([...res.values()],q,top).slice(0,30)}
+function iaRelevant(list,q,top){const W=words_(q);const TW=top?words_(top.title+' '+String(top.artist||'').split(',')[0]).filter(w=>w.length>2):[];
+ const has=(hay,w)=>hay.some(h=>h===w||h.startsWith(w)||(w.length>=4&&lev1(h,w)));
+ return list.filter(x=>{const hay=words_(x.title+' '+x.artist);const qh=W.filter(w=>has(hay,w)).length;const th=TW.filter(w=>has(hay,w)).length;
+  return (W.length&&qh>=Math.ceil(W.length*0.6))||(TW.length&&th>=Math.min(2,TW.length))})}
 
 const sresCache=new Map();
 function searchData(q){const k=norm(q);let d=sresCache.get(k);if(d)return d;
@@ -1057,7 +1081,7 @@ function searchData(q){const k=norm(q);let d=sresCache.get(k);if(d)return d;
  return d}
 function repaintResults(k){if(state.sq&&norm(state.sq)===k&&topView().name==='search'&&$('#sres'))renderResults()}
 
-function commitSearch(q){q=String(q||'').trim();if(!q)return;state.q=q;state.sq=q;state.sTab='all';
+function commitSearch(q){q=String(q||'').trim();if(!q)return;clearTimeout(sugT);sugTok++;state.q=q;state.sq=q;state.sTab='all';
  state.hist=[q,...state.hist.filter(h=>norm(h)!==norm(q))].slice(0,12);saveKV('hist');
  const inp=$('#q');if(inp){inp.value=q;inp.blur()}const c=$('.sbox .clr');if(c)c.style.display='';renderResults();$('#main').scrollTop=0}
 
@@ -1070,7 +1094,7 @@ function quickRows(items,ctxName){const songs=items.filter(x=>x.kind==='song').m
   return `<div class="row" data-act="go" data-v="${v}" data-k="${esc(it.id)}">${art(it.thumb,name,'md',it.kind==='artist',name)}<div class="ri"><div class="rt">${esc(name)}</div><div class="rs"><span class="t">${it.kind==='artist'?'Artista':it.kind==='album'?'Álbum'+(it.artist?' · '+esc(it.artist):''):'Playlist'}</span></div></div></div>`}).join('')}
 function searchHomeHTML(){return (state.hist.length?`<h2>Búsquedas recientes<button class="more" data-act="histclear">Borrar todo</button></h2><div class="sug">${state.hist.map(h=>`<div class="sgi"><button class="sgl" data-act="sugo" data-q="${esc(h)}">${ic('clock',20)}<span class="st">${esc(h)}</span></button><button class="ib" data-act="histdel" data-q="${esc(h)}" aria-label="Quitar">${ic('close',16)}</button></div>`).join('')}</div>`:'')
  +`<h2>Explora por género</h2><div class="gen">${GENRES.map(([n,a,b])=>`<button style="background:linear-gradient(135deg,${a},${b})" data-act="sugo" data-q="${esc(n)}"><span>${esc(n)}</span>${ic('note',34)}</button>`).join('')}</div>`}
-async function showSuggest(){const el=$('#sres');if(!el)return;const qv=(state.q||'').trim();
+async function showSuggest(){const el=$('#sres');if(!el)return;const qv=(state.q||'').trim();if(state.sq&&qv&&norm(state.sq)===norm(qv)){renderResults();return}
  if(!qv){el.innerHTML=searchHomeHTML();hydrate(el);return}
  const tok=++sugTok;const key=norm(qv);
  const paint=()=>{const e2=$('#sres');if(!e2||tok!==sugTok)return;const cd=sugCache.get(key)||{};const loc=localSearch(qv).slice(0,3);const lc=setCtx('sugloc',loc.map(t=>t.id),'Tu biblioteca');
