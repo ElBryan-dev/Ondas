@@ -206,12 +206,22 @@ final class AudioCache {
         }
     }
 
-    /** Lee [start, end] del archivo, esperando a que la descarga llegue a cada byte. */
+    /**
+     * Lee [start, end]: del archivo si ya está descargado; si piden una zona muy adelantada
+     * (al adelantar la canción o al leer el final del archivo) la trae directo de la red
+     * para no esperar a que la descarga llegue hasta ahí.
+     */
     static final class FileStream extends InputStream {
+        private static final long DIRECT_GAP = 768L * 1024;
         private final Entry e;
         private long pos;
         private final long end;
         private RandomAccessFile raf;
+        private Response net;
+        private InputStream netIn;
+        private long netEnd = -1;
+        private int netFails = 0;
+        private YtEngine.Resolved r;
 
         FileStream(Entry e, long start, long end) {
             this.e = e;
@@ -226,20 +236,66 @@ final class AudioCache {
             return n <= 0 ? -1 : (b[0] & 0xff);
         }
 
+        private void closeNet() {
+            if (net != null) net.close();
+            net = null;
+            netIn = null;
+        }
+
+        private int readNet(byte[] b, int off, int len) throws IOException {
+            while (true) {
+                try {
+                    if (netIn == null || pos > netEnd) {
+                        closeNet();
+                        if (r == null) r = YtEngine.resolve(e.id, false);
+                        netEnd = Math.min(end, pos + CHUNK - 1);
+                        Response up = YtEngine.fetchRange(r, pos, netEnd);
+                        if (up.code() == 403 || up.code() == 410) {
+                            up.close();
+                            r = YtEngine.resolve(e.id, true);
+                            throw new IOException("caducado");
+                        }
+                        if (!up.isSuccessful() || up.body() == null) {
+                            int c = up.code();
+                            up.close();
+                            throw new IOException("HTTP " + c);
+                        }
+                        net = up;
+                        netIn = up.body().byteStream();
+                    }
+                    int n = netIn.read(b, off, (int) Math.min(len, netEnd - pos + 1));
+                    if (n > 0) {
+                        pos += n;
+                        netFails = 0;
+                        return n;
+                    }
+                    closeNet();
+                    if (pos > end) return -1;
+                } catch (Exception ex) {
+                    closeNet();
+                    if (++netFails > 5) throw new IOException(ex);
+                    try {
+                        Thread.sleep(300L * netFails);
+                    } catch (InterruptedException ie) {
+                        Thread.currentThread().interrupt();
+                        throw new IOException("interrumpido");
+                    }
+                }
+            }
+        }
+
         @Override
         public int read(byte[] b, int off, int len) throws IOException {
             if (pos > end) return -1;
             long waitedSince = System.currentTimeMillis();
             long lastHave = e.have;
             while (e.have <= pos) {
-                if (e.failed) {
-                    // reintentar la descarga desde donde quedó
-                    e.start();
-                }
+                if (!e.done && pos - e.have > DIRECT_GAP) return readNet(b, off, len);
+                if (e.failed) e.start();
                 synchronized (e.lock) {
                     if (e.have <= pos) {
                         try {
-                            e.lock.wait(1000);
+                            e.lock.wait(500);
                         } catch (InterruptedException ie) {
                             Thread.currentThread().interrupt();
                             throw new IOException("interrumpido");
@@ -249,10 +305,11 @@ final class AudioCache {
                 if (e.have != lastHave) {
                     lastHave = e.have;
                     waitedSince = System.currentTimeMillis();
-                } else if (System.currentTimeMillis() - waitedSince > 60000) {
-                    throw new IOException("sin datos");
+                } else if (System.currentTimeMillis() - waitedSince > 8000) {
+                    return readNet(b, off, len); // la descarga se atascó: seguir por la red
                 }
             }
+            closeNet();
             if (raf == null) raf = new RandomAccessFile(e.file, "r");
             long avail = Math.min(e.have, end + 1) - pos;
             int n = (int) Math.min(len, avail);
@@ -264,6 +321,7 @@ final class AudioCache {
 
         @Override
         public void close() throws IOException {
+            closeNet();
             if (raf != null) raf.close();
         }
     }

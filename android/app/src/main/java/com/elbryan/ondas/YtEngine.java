@@ -96,7 +96,7 @@ public final class YtEngine {
             if (tt != null && tt != AudioTrackType.ORIGINAL) continue;
             MediaFormat f = s.getFormat();
             int br = Math.max(s.getAverageBitrate(), s.getBitrate() / 1000);
-            int score = br + ((f == MediaFormat.WEBMA_OPUS || f == MediaFormat.WEBMA) ? 40 : 0);
+            int score = br + (f == MediaFormat.M4A ? 200 : 0);
             if (score > bestScore) {
                 bestScore = score;
                 best = s;
