@@ -1,0 +1,7 @@
+{
+  "appId": "com.elbryan.ondas",
+  "appName": "Ondas",
+  "webDir": "www",
+  "server": { "androidScheme": "https" },
+  "android": { "backgroundColor": "#0b0b10" }
+}

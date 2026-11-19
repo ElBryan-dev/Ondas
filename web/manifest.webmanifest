@@ -1,0 +1,21 @@
+{
+  "name": "Ondas — Música FLAC",
+  "short_name": "Ondas",
+  "description": "Reproductor de música lossless (FLAC Hi-Res) con biblioteca, playlists, ecualizador y letras.",
+  "lang": "es",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#0b0b10",
+  "theme_color": "#0b0b10",
+  "categories": ["music", "entertainment"],
+  "icons": [
+    {"src": "icons/icon-192.png", "sizes": "192x192", "type": "image/png"},
+    {"src": "icons/icon-512.png", "sizes": "512x512", "type": "image/png"},
+    {"src": "icons/maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable"}
+  ],
+  "file_handlers": [
+    {"action": "./", "accept": {"audio/flac": [".flac"], "audio/mpeg": [".mp3"], "audio/mp4": [".m4a"], "audio/ogg": [".ogg", ".opus"], "audio/wav": [".wav"]}}
+  ]
+}
