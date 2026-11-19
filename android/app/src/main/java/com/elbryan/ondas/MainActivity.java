@@ -9,6 +9,7 @@ public class MainActivity extends BridgeActivity {
         registerPlugin(OndasNativePlugin.class);
         super.onCreate(savedInstanceState);
         YtEngine.init();
+        AudioCache.init(getCacheDir());
         // Sirve /_yt/<id> (audio de YouTube) y /_ia?u=... (Internet Archive) desde el propio teléfono
         bridge.setWebViewClient(new OndasWebViewClient(bridge));
         bridge.getWebView().getSettings().setMediaPlaybackRequiresUserGesture(false);

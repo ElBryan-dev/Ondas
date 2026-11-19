@@ -184,209 +184,58 @@ public final class YtEngine {
 
     public static WebResourceResponse serveYoutube(WebResourceRequest req, String id) {
         if (!VID.matcher(id).matches()) return error(400, "id inválido");
-        Resolved r;
+        AudioCache.Entry e;
         try {
-            r = resolve(id, false);
-        } catch (ContentNotAvailableException e) {
-            Log.w(TAG, "no disponible " + id, e);
+            e = AudioCache.get(id);
+        } catch (ContentNotAvailableException ex) {
+            Log.w(TAG, "no disponible " + id, ex);
             return error(404, "Canción no disponible en tu país o eliminada");
-        } catch (Exception e) {
-            Log.e(TAG, "resolve " + id, e);
+        } catch (Exception ex) {
+            Log.e(TAG, "resolve " + id, ex);
             return error(503, "YouTube no respondió. Revisa tu conexión e inténtalo de nuevo.");
         }
         Map<String, String> h = new HashMap<>();
         h.put("Accept-Ranges", "bytes");
         h.put("Access-Control-Allow-Origin", "*");
         h.put("Cache-Control", "no-store");
+        long size = e.size;
         if ("HEAD".equalsIgnoreCase(req.getMethod())) {
-            if (r.size > 0) h.put("Content-Length", String.valueOf(r.size));
-            return new WebResourceResponse(r.mime, null, 200, "OK", h, new ByteArrayInputStream(new byte[0]));
+            h.put("Content-Length", String.valueOf(size));
+            return new WebResourceResponse(e.mime, null, 200, "OK", h, new ByteArrayInputStream(new byte[0]));
         }
         String range = header(req, "Range");
-        try {
-            if (range != null && r.size > 0) {
-                Matcher m = Pattern.compile("bytes=(\\d+)-(\\d*)").matcher(range);
-                long start = 0;
-                long end = -1;
-                if (m.find()) {
-                    start = Long.parseLong(m.group(1));
-                    if (!m.group(2).isEmpty()) end = Long.parseLong(m.group(2));
-                }
-                if (start >= r.size) {
-                    h.put("Content-Range", "bytes */" + r.size);
-                    return new WebResourceResponse(r.mime, null, 416, "Range Not Satisfiable", h, new ByteArrayInputStream(new byte[0]));
-                }
-                if (end < 0 || end - start + 1 > CHUNK) end = start + CHUNK - 1;
-                end = Math.min(end, r.size - 1);
-                Response up = fetchRange(r, start, end);
-                if (up.code() == 403 || up.code() == 410) {
-                    up.close();
-                    r = resolve(id, true);
-                    up = fetchRange(r, start, end);
-                }
-                if (!up.isSuccessful() || up.body() == null) {
-                    int c = up.code();
-                    up.close();
-                    return error(503, "YouTube rechazó la reproducción (" + c + ")");
-                }
-                h.put("Content-Range", "bytes " + start + "-" + end + "/" + r.size);
-                h.put("Content-Length", String.valueOf(end - start + 1));
-                return new WebResourceResponse(r.mime, null, 206, "Partial Content", h, new RangeStream(id, r, start, end, up));
+        long start = 0;
+        long end = size - 1;
+        if (range != null) {
+            Matcher m = Pattern.compile("bytes=(\\d+)-(\\d*)").matcher(range);
+            if (m.find()) {
+                start = Long.parseLong(m.group(1));
+                if (!m.group(2).isEmpty()) end = Math.min(size - 1, Long.parseLong(m.group(2)));
             }
-            // Sin Range (descargas): archivo completo, por tramos
-            if (r.size > 0) h.put("Content-Length", String.valueOf(r.size));
-            return new WebResourceResponse(r.mime, null, 200, "OK", h, new ChunkedStream(id, r));
-        } catch (Exception e) {
-            Log.e(TAG, "stream " + id, e);
-            return error(503, "Error al cargar el audio");
+            if (start >= size) {
+                h.put("Content-Range", "bytes */" + size);
+                return new WebResourceResponse(e.mime, null, 416, "Range Not Satisfiable", h, new ByteArrayInputStream(new byte[0]));
+            }
         }
+        h.put("Content-Length", String.valueOf(end - start + 1));
+        InputStream in = new AudioCache.FileStream(e, start, end);
+        if (range != null) {
+            h.put("Content-Range", "bytes " + start + "-" + end + "/" + size);
+            return new WebResourceResponse(e.mime, null, 206, "Partial Content", h, in);
+        }
+        return new WebResourceResponse(e.mime, null, 200, "OK", h, in);
     }
 
-    /**
-     * Entrega exactamente los bytes [start, end]. Si la conexión se corta a mitad
-     * (o el enlace caduca), vuelve a pedir lo que falta desde donde se quedó.
-     */
-    static final class RangeStream extends InputStream {
-        private final String id;
-        private Resolved r;
-        private long pos;
-        private final long end;
-        private Response resp;
-        private InputStream in;
-        private int retries = 0;
-
-        RangeStream(String id, Resolved r, long start, long end, Response first) {
-            this.id = id;
-            this.r = r;
-            this.pos = start;
-            this.end = end;
-            if (first != null && first.body() != null) {
-                resp = first;
-                in = first.body().byteStream();
-            }
-        }
-
-        private static void nap(long ms) {
+    /** Precarga una canción (por ejemplo, la siguiente de la cola). */
+    public static void prefetch(String id) {
+        if (!VID.matcher(id).matches()) return;
+        new Thread(() -> {
             try {
-                Thread.sleep(ms);
-            } catch (InterruptedException ignored) {
-                Thread.currentThread().interrupt();
+                AudioCache.get(id);
+            } catch (Exception e) {
+                Log.w(TAG, "precarga " + id + ": " + e.getMessage());
             }
-        }
-
-        private void closeUp() {
-            if (resp != null) resp.close();
-            resp = null;
-            in = null;
-        }
-
-        private void reopen() throws IOException {
-            closeUp();
-            while (true) {
-                if (++retries > 5) throw new IOException("Demasiados reintentos");
-                try {
-                    Response up = fetchRange(r, pos, end);
-                    if (up.code() == 403 || up.code() == 410) {
-                        up.close();
-                        try {
-                            r = resolve(id, true);
-                        } catch (Exception e) {
-                            nap(500L * retries);
-                        }
-                        continue;
-                    }
-                    if (!up.isSuccessful() || up.body() == null) {
-                        up.close();
-                        nap(500L * retries);
-                        continue;
-                    }
-                    resp = up;
-                    in = up.body().byteStream();
-                    return;
-                } catch (IOException e) {
-                    Log.w(TAG, "reintento " + retries + " en " + pos, e);
-                    nap(500L * retries);
-                }
-            }
-        }
-
-        @Override
-        public int read() throws IOException {
-            byte[] b = new byte[1];
-            int n = read(b, 0, 1);
-            return n <= 0 ? -1 : (b[0] & 0xff);
-        }
-
-        @Override
-        public int read(byte[] b, int off, int len) throws IOException {
-            if (pos > end) return -1;
-            len = (int) Math.min(len, end - pos + 1);
-            while (true) {
-                if (in == null) reopen();
-                try {
-                    int n = in.read(b, off, len);
-                    if (n > 0) {
-                        pos += n;
-                        return n;
-                    }
-                    if (pos > end) return -1;
-                    closeUp(); // terminó antes de tiempo: pedir el resto
-                } catch (IOException e) {
-                    Log.w(TAG, "corte en " + pos, e);
-                    closeUp();
-                    if (retries >= 5) throw e;
-                }
-            }
-        }
-
-        @Override
-        public void close() {
-            closeUp();
-        }
-    }
-
-    /** Lee el archivo completo (descargas) por tramos, con reintentos. */
-    static final class ChunkedStream extends InputStream {
-        private final String id;
-        private final Resolved r;
-        private long pos = 0;
-        private RangeStream cur;
-
-        ChunkedStream(String id, Resolved r) {
-            this.id = id;
-            this.r = r;
-        }
-
-        @Override
-        public int read() throws IOException {
-            byte[] b = new byte[1];
-            int n = read(b, 0, 1);
-            return n <= 0 ? -1 : (b[0] & 0xff);
-        }
-
-        @Override
-        public int read(byte[] b, int off, int len) throws IOException {
-            while (true) {
-                if (r.size <= 0) throw new IOException("Tamaño desconocido");
-                if (pos >= r.size) return -1;
-                if (cur == null) {
-                    long e = Math.min(pos + CHUNK, r.size) - 1;
-                    cur = new RangeStream(id, r, pos, e, null);
-                }
-                int n = cur.read(b, off, len);
-                if (n > 0) {
-                    pos += n;
-                    return n;
-                }
-                cur.close();
-                cur = null;
-            }
-        }
-
-        @Override
-        public void close() {
-            if (cur != null) cur.close();
-        }
+        }, "ondas-pre").start();
     }
 
     /** Proxy para archive.org (FLAC libre), con soporte de Range. */
