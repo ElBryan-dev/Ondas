@@ -33,7 +33,7 @@ import org.schabi.newpipe.extractor.services.youtube.YoutubeParsingHelper;
 import org.schabi.newpipe.extractor.stream.AudioStream;
 import org.schabi.newpipe.extractor.stream.AudioTrackType;
 import org.schabi.newpipe.extractor.stream.DeliveryMethod;
-import org.schabi.newpipe.extractor.stream.StreamInfo;
+import org.schabi.newpipe.extractor.stream.StreamExtractor;
 
 /**
  * Obtiene el audio de YouTube con NewPipeExtractor y lo entrega al WebView
@@ -86,8 +86,10 @@ public final class YtEngine {
         init();
         Resolved c = CACHE.get(id);
         if (!fresh && c != null && c.expires > System.currentTimeMillis()) return c;
-        StreamInfo info = StreamInfo.getInfo(ServiceList.YouTube, "https://www.youtube.com/watch?v=" + id);
-        List<AudioStream> streams = info.getAudioStreams();
+        // Solo se pide lo necesario para el audio (más rápido que StreamInfo completo)
+        StreamExtractor ex = ServiceList.YouTube.getStreamExtractor("https://www.youtube.com/watch?v=" + id);
+        ex.fetchPage();
+        List<AudioStream> streams = ex.getAudioStreams();
         AudioStream best = null;
         int bestScore = -1;
         for (AudioStream s : streams) {
@@ -224,6 +226,24 @@ public final class YtEngine {
             return new WebResourceResponse(e.mime, null, 206, "Partial Content", h, in);
         }
         return new WebResourceResponse(e.mime, null, 200, "OK", h, in);
+    }
+
+    private static final java.util.concurrent.ExecutorService WARM = java.util.concurrent.Executors.newFixedThreadPool(2);
+
+    /** Resuelve por adelantado (sin descargar) para que al tocar empiece al instante. */
+    public static void warm(List<String> ids) {
+        for (String id : ids) {
+            if (id == null || !VID.matcher(id).matches()) continue;
+            Resolved c = CACHE.get(id);
+            if (c != null && c.expires > System.currentTimeMillis()) continue;
+            WARM.execute(() -> {
+                try {
+                    resolve(id, false);
+                } catch (Exception e) {
+                    Log.w(TAG, "warm " + id + ": " + e.getMessage());
+                }
+            });
+        }
     }
 
     /** Precarga una canción (por ejemplo, la siguiente de la cola). */

@@ -384,6 +384,9 @@ async function api(path) {
   }
 }
 
+// Prepara la sesión de YouTube Music mientras carga la interfaz
+if (Capacitor.isNativePlatform()) setTimeout(() => { yt().catch(() => {}); }, 30);
+
 window.OndasBridge = {
   native: Capacitor.isNativePlatform(),
   api,

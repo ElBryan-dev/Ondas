@@ -24,6 +24,17 @@ public class OndasNativePlugin extends Plugin {
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36";
 
     @PluginMethod
+    public void warm(PluginCall call) {
+        try {
+            java.util.List<String> ids = call.getArray("ids").toList();
+            YtEngine.warm(ids);
+        } catch (Exception e) {
+            // lista inválida: se ignora
+        }
+        call.resolve();
+    }
+
+    @PluginMethod
     public void prefetch(PluginCall call) {
         String id = call.getString("id");
         if (id != null) YtEngine.prefetch(id);
