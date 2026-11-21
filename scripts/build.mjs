@@ -20,5 +20,6 @@ await build({
 let html = readFileSync('www/index.html', 'utf8');
 html = html.replace('<script>\n\'use strict\';', '<script src="native.bundle.js"></script>\n<script>\n\'use strict\';');
 if (!html.includes('native.bundle.js')) throw new Error('No se pudo inyectar native.bundle.js');
+html = html.replace("'__APP_VERSION__'", `'${process.env.VERSION_CODE || '0'}'`);
 writeFileSync('www/index.html', html);
 console.log('www listo');

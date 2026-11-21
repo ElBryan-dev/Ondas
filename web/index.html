@@ -416,6 +416,15 @@ h2 .more{font-family:Jakarta;font-size:12.5px;gap:6px;padding:6px 11px;border-ra
 #lyr .lb{-webkit-mask-image:none;mask-image:none}
 #lyr .ln{font-family:var(--serif);font-weight:600;font-size:29px;line-height:1.28;letter-spacing:-.015em}
 #lyr .ph .from b{font-family:var(--serif);font-style:italic}
+/* ===== v5 ===== */
+.art.col{display:grid;grid-template-columns:1fr 1fr;grid-template-rows:1fr 1fr;gap:0;background:var(--s2)}
+.art.col img{position:static;width:100%;height:100%;object-fit:cover;opacity:1}
+.ctr .pp,#mPP{position:relative}
+#player.buffering .ctr .pp::after,#mini.buffering #mPP::after{content:"";position:absolute;inset:-5px;border-radius:50%;border:2.5px solid rgba(246,239,230,.14);border-top-color:var(--ac);animation:sp .8s linear infinite;pointer-events:none}
+#mini.buffering #mPP::after{inset:2px}
+#upd{position:fixed;left:16px;right:16px;top:calc(var(--st) + 10px);z-index:90;display:flex;align-items:center;gap:10px;padding:12px 10px 12px 16px;border-radius:20px;background:#221d27;border:1px solid rgba(255,180,162,.35);box-shadow:0 14px 34px rgba(0,0,0,.55);animation:updin .35s ease-out}
+#upd .tx{flex:1;min-width:0}#upd b{display:block;font-family:var(--serif);font-size:16px}#upd span{font-size:12.5px;color:var(--mu)}
+@keyframes updin{from{transform:translateY(-120%)}to{transform:none}}
 @media (min-width:900px){
   #main{padding-left:max(16px,calc(50vw - 520px));padding-right:max(16px,calc(50vw - 520px))}
   .card{width:170px}
@@ -655,6 +664,9 @@ async function importFiles(list){
 async function attachLrcs(lrcs){let n=0;for(const t of state.tracks){const f=lrcs.get(t.fileName.replace(/\.[^.]+$/,'').toLowerCase());if(f){t.lyrics=await f.text();if(db)put('tracks',t.id,t).catch(()=>{});n++}}toast(n?`Letras añadidas a ${n} canciones`:'Ninguna letra coincidió con tus canciones')}
 
 /* ================= Art ================= */
+function artCollage(ids,seed,size,label){const cs=[];for(const id of ids){const t=state.byId.get(id);if(t&&t.coverId&&!cs.includes(t.coverId))cs.push(t.coverId);if(cs.length>=4)break}
+ if(cs.length<4)return art(cs[0]||null,seed,size,false,label);const px=size==='xl'?300:120;
+ return `<div class="art ${size} col">${cs.map(c=>/^https?:/.test(c)?`<img alt="" referrerpolicy="no-referrer" decoding="async" data-url="${esc(c.replace(/=w\d+-h\d+/,`=w${px}-h${px}`))}">`:`<img alt="" data-cover="${c}">`).join('')}</div>`}
 function art(coverId,seed,size,round,label){const h=hue(seed||'x');const ini=esc((label??seed??'?').trim().charAt(0).toUpperCase()||'♪');
  const px=size==='sm'?120:size==='md'?160:size==='lg'?360:600;
  const img=coverId?(/^https?:/.test(coverId)?`<img alt="" referrerpolicy="no-referrer" loading="lazy" decoding="async" data-url="${esc(coverId.replace(/=w\d+-h\d+/,`=w${px}-h${px}`))}">`:`<img alt="" data-cover="${coverId}">`):'';
@@ -726,12 +738,12 @@ function searchResults(q){const L=lib();q=norm(q.trim());
 VIEWS.library=()=>{const L=lib();const tabs=[['playlists','Playlists'],['albums','Álbumes'],['artists','Artistas'],['songs','Canciones']];
  let body='';
  if(state.libTab==='playlists'){
-  const it=(attrs,cid,seed,name,sub,lbl)=>`<div class="row" ${attrs}>${art(cid,seed,'md',false,lbl||name)}<div class="ri"><div class="rt">${esc(name)}</div><div class="rs"><span class="t">${esc(sub)}</span></div></div></div>`;
+  const it=(attrs,cid,seed,name,sub,lbl,ids)=>`<div class="row" ${attrs}>${ids&&ids.length?artCollage(ids,seed,'md',lbl||name):art(cid,seed,'md',false,lbl||name)}<div class="ri"><div class="rt">${esc(name)}</div><div class="rs"><span class="t">${esc(sub)}</span></div></div></div>`;
   body=`<div class="row" data-act="newpl"><div class="art md" style="background:var(--s2)">${ic('plus',26)}</div><div class="ri"><div class="rt">Crear playlist</div></div></div>`
-   +it('data-act="go" data-v="liked"',null,'♥♥','Canciones que te gustan',`Playlist · ${state.likes.size} canciones`,'♥')
-   +(dlIds().length?it('data-act="go" data-v="downloads"',null,'Descargas','Descargas',`Sin conexión · ${dlIds().length} canciones`,'↓'):'')
+   +it('data-act="go" data-v="liked"',null,'♥♥','Canciones que te gustan',`Playlist · ${state.likes.size} canciones`,'♥',[...state.likes].reverse())
+   +(dlIds().length?it('data-act="go" data-v="downloads"',null,'Descargas','Descargas',`Sin conexión · ${dlIds().length} canciones`,'↓',dlIds()):'')
    +(state.tracks.some(isHR)?it('data-act="go" data-v="hires"',null,'Hi-Res Lossless','Hi-Res Lossless',`Automática · ${state.tracks.filter(isHR).length} canciones`):'')
-   +state.playlists.map(p=>it(`data-act="go" data-v="playlist" data-k="${p.id}"`,plCover(p),p.name,p.name,`Playlist · ${p.ids.length} canciones`)).join('')}
+   +state.playlists.map(p=>it(`data-act="go" data-v="playlist" data-k="${p.id}"`,plCover(p),p.name,p.name,`Playlist · ${p.ids.length} canciones`,null,p.ids)).join('')}
  else if(state.libTab==='albums')body=L.albums.map(a=>`<div class="row" data-act="go" data-v="album" data-k="${esc(a.key)}">${art(a.coverId,a.name,'md',false,a.name)}<div class="ri"><div class="rt">${esc(a.name)}</div><div class="rs"><span class="t">${esc(a.artist)}${a.year?' · '+a.year:''}</span></div></div></div>`).join('')||'<p class="pad muted">Sin álbumes</p>';
  else if(state.libTab==='artists')body=L.artists.map(a=>`<div class="row" data-act="go" data-v="artist" data-k="${esc(a.key)}">${art(a.coverId,a.name,'md',true,a.name)}<div class="ri"><div class="rt">${esc(a.name)}</div><div class="rs"><span class="t">${a.ids.length} canciones</span></div></div></div>`).join('')||'<p class="pad muted">Sin artistas</p>';
  else{const coll=new Intl.Collator('es',{sensitivity:'base'});const s=state.libSort;let arr=state.tracks.slice();
@@ -741,8 +753,8 @@ VIEWS.library=()=>{const L=lib();const tabs=[['playlists','Playlists'],['albums'
  return `<div class="top"><h1>Tu biblioteca</h1><button class="ib" data-act="pick" aria-label="Importar">${ic('plus')}</button><button class="ib" data-act="settings" aria-label="Ajustes">${ic('gear')}</button></div>
  <div class="chips">${tabs.map(([k,l])=>`<button class="chip${state.libTab===k?' on':''}" data-act="libtab" data-k="${k}">${l}</button>`).join('')}</div>${body}`};
 
-function detail({title,sub,coverId,seed,ids,ctx,round,num,extra,label,noList,playable}){const h=hue(seed||title);const pl=playable??ids.length>0;
- return `<div class="dhead" style="--hc:hsl(${h},55%,40%)" data-hc="${coverId||''}"><button class="ib back" data-act="back">${ic('back')}</button>${art(coverId,seed||title,'xl',round,label||title)}
+function detail({title,sub,coverId,seed,ids,ctx,round,num,extra,label,noList,playable,collage}){const h=hue(seed||title);const pl=playable??ids.length>0;
+ return `<div class="dhead" style="--hc:hsl(${h},55%,40%)" data-hc="${coverId||''}"><button class="ib back" data-act="back">${ic('back')}</button>${collage&&collage.length?artCollage(collage,seed||title,'xl',label||title):art(coverId,seed||title,'xl',round,label||title)}
  <h1>${esc(title)}</h1><p class="muted">${sub}</p>
  <div class="dbtns">${extra||''}<span class="sp"></span>${pl?`<button class="ib" data-act="shufctx" data-ctx="${ctx}" aria-label="Aleatorio">${ic('shuffle')}</button><button class="bigplay" data-act="playctx" data-ctx="${ctx}" aria-label="Reproducir">${ic('play',28)}</button>`:''}</div></div>
  ${noList?'':ids.length?ids.map((id,i)=>row(state.byId.get(id),i,ctx,{num})).join(''):'<div class="empty"><p>Todavía no hay canciones aquí.</p></div>'}`}
@@ -755,8 +767,8 @@ VIEWS.artist=v=>{const L=lib();const a=L.artistMap.get(v.k);if(!a)return VIEWS.g
  return detail({title:a.name,sub:`${als.length} álbum${als.length===1?'':'es'} · ${a.ids.length} canciones`,coverId:a.coverId,seed:a.name,ids:a.ids,ctx,round:true,noList:true})
   +`<h2>Canciones</h2>${a.ids.slice(0,10).map((id,i)=>row(state.byId.get(id),i,ctx)).join('')}${als.length?`<h2>Discografía</h2><div class="hs">${als.map(albumCard).join('')}</div>`:''}`};
 VIEWS.playlist=v=>{const p=state.playlists.find(x=>x.id===v.k);if(!p)return VIEWS.gone();const ids=p.ids.filter(id=>state.byId.has(id));
- return detail({title:p.name,sub:`Playlist · ${ids.length} canciones${ids.length?', '+tot(ids):''}`,coverId:plCover({ids}),seed:p.name,ids,ctx:setCtx('pl:'+p.id,ids,p.name),extra:`<button class="ib" data-act="plmenu" data-k="${p.id}">${ic('more')}</button>`})};
-VIEWS.liked=()=>{const ids=[...state.likes].filter(id=>state.byId.has(id)).reverse();return detail({title:'Canciones que te gustan',sub:`${ids.length} canciones`,seed:'♥♥',label:'♥',ids,ctx:setCtx('liked',ids,'Canciones que te gustan')})};
+ return detail({title:p.name,sub:`Playlist · ${ids.length} canciones${ids.length?', '+tot(ids):''}`,coverId:plCover({ids}),seed:p.name,ids,collage:ids,ctx:setCtx('pl:'+p.id,ids,p.name),extra:`<button class="ib" data-act="plmenu" data-k="${p.id}">${ic('more')}</button>`})};
+VIEWS.liked=()=>{const ids=[...state.likes].filter(id=>state.byId.has(id)).reverse();return detail({title:'Canciones que te gustan',sub:`${ids.length} canciones`,seed:'♥♥',label:'♥',ids,collage:ids,ctx:setCtx('liked',ids,'Canciones que te gustan')})};
 VIEWS.hires=()=>{const ids=state.tracks.filter(isHR).sort((a,b)=>b.sampleRate-a.sampleRate||b.bits-a.bits).map(t=>t.id);return detail({title:'Hi-Res Lossless',sub:`Más de 16-bit o 48 kHz · ${ids.length} canciones`,seed:'Hi-Res Lossless',ids,ctx:setCtx('hires',ids,'Hi-Res Lossless')})};
 VIEWS.gone=()=>`<div class="top"><button class="ib" data-act="back">${ic('back')}</button></div><div class="empty"><p>Este elemento ya no existe.</p></div>`;
 
@@ -799,6 +811,7 @@ let curURL=null,loadToken=0;
 async function loadTrack(i,autoplay=true,startAt=0){
  if(i<0||i>=state.queue.length)return;state.qi=i;const t=cur();if(!t)return;const tok=++loadToken;
  if(DJ.xfading||DJ.prep)stopOtherDeck();
+ if(autoplay)setBuffering(true);
  if(!audio.paused&&audio.currentTime>.4&&!DJ.fading)await fadeTo(0,140);if(tok!==loadToken)return;
  try{audio.volume=0}catch(e){}fadeInNext=true;DJ.fading=false;
  audio.crossOrigin='anonymous';altTried=false;lastGood=startAt||0;lastGoodAt=Date.now();if(rec.id!==t.id)rec={id:t.id,n:0};
@@ -968,6 +981,7 @@ async function settingsSheet(){const S=state.settings;let usage='';try{if(naviga
  <form id="srvf"><input class="field" id="srvu" inputmode="url" autocapitalize="off" placeholder="https://tu-servidor.onrender.com (vacío = este mismo sitio)" value="${esc(S.server)}"><input class="field" id="srvk" autocapitalize="off" placeholder="Clave de acceso (ONDAS_KEY), si la configuraste" value="${esc(S.key)}"><div class="sh-btns"><button class="btn" type="submit">Guardar y probar</button></div></form>`}
  <button class="mitem" data-act="autoplay">${ic('note',22)}Radio automática al terminar la cola<span style="margin-left:auto" class="sw${S.autoplay!==false?' on':''}"></span></button>
  ${mi('pick-files','upload','Importar canciones')}${NATIVE?'':mi('pick-dir','folder','Importar carpeta')}${mi('pick-lrc','lyrics','Importar letras (.lrc)')}${deferredPrompt?mi('install','install','Instalar app'):''}
+ ${mi('chkupd','install',`Buscar actualizaciones · versión 1.${APP_VER}`)}
  ${mi('wipe','trash','Borrar toda la biblioteca','','danger')}
  <p class="note">${dlIds().length?`${dlIds().length} canciones del catálogo descargadas para escuchar sin conexión.<br><br>`:''}${NATIVE?'':`<b>Instalar:</b> en Android/Chrome usa “Instalar app” o el menú ⋮ → Instalar aplicación. En iPhone abre en Safari → Compartir → “Añadir a pantalla de inicio”. En computadora, el ícono de instalar en la barra de direcciones.<br><br>`}Ondas guarda tu música solo en este dispositivo.</p>`);
  const f=$('#srvf');if(f)f.onsubmit=async e=>{e.preventDefault();S.server=$('#srvu').value.trim().replace(/\/+$/,'');S.key=$('#srvk').value.trim();saveKV('settings');state.apiState='checking';toast('Probando conexión… (un servidor gratuito puede tardar ~1 min en despertar)',5000);
@@ -1227,7 +1241,7 @@ VIEWS.iaitem=v=>asyncView(v,'ia:'+v.k,()=>iaItem(v.k),d=>{const ids=d.tracks.map
  return detail({title:d.title,sub:`<b style="color:var(--tx)">${esc(d.artist)}</b>${d.year?' · '+esc(d.year):''} · ${ids.length} pistas · FLAC${d.hr?' 24-bit':''}`,coverId:d.thumb,seed:d.title,ids,ctx,num:true,extra:`<button class="ib" data-act="addall" data-ctx="${ctx}">${ic('addlist')}</button>${dlBtn(ctx)}`})
   +(d.desc?`<h2>Acerca de</h2><p class="desc">${esc(d.desc.slice(0,500))}${d.desc.length>500?'…':''}</p>`:'')
   +`<p class="note">Fuente: <a style="color:var(--mu)" href="https://archive.org/details/${encodeURIComponent(d.id)}" target="_blank" rel="noopener">archive.org/details/${esc(d.id)}</a>${d.license?` · <a style="color:var(--mu)" href="${esc(d.license)}" target="_blank" rel="noopener">licencia</a>`:''}</p>`});
-VIEWS.downloads=()=>{const ids=dlIds();return detail({title:'Descargas',sub:`${ids.length} canciones disponibles sin conexión`,seed:'Descargas',label:'↓',ids,ctx:setCtx('downloads',ids,'Descargas')})};
+VIEWS.downloads=()=>{const ids=dlIds();return detail({title:'Descargas',sub:`${ids.length} canciones disponibles sin conexión`,seed:'Descargas',label:'↓',ids,collage:ids,ctx:setCtx('downloads',ids,'Descargas')})};
 
 Object.assign(A,{
  srcchip:el=>{state.searchSrc=el.dataset.k;render()},
@@ -1420,7 +1434,7 @@ function paintLyricCard(force){const t=cur();const c=$('#plyr'),nx=$('.pnext');i
  c.style.display='';if(nx)nx.style.display='none';
  if(!lrc){if(force||cardIdx!==-3){cardIdx=-3;const lines=t.lyrics.replace(/\[[^\]]*\]/g,'').split('\n').map(x=>x.trim()).filter(Boolean);$('#plc').textContent=lines[0]||'';$('#pln').textContent=lines[1]||''}return}
  const i=lineAt(audio.currentTime);if(i===cardIdx&&!force)return;cardIdx=i;
- $('#plc').textContent=i<0?'♪':(lrc[i].text||'♪');$('#pln').textContent=(lrc[i+1]||{}).text||''}
+ $('#plc').textContent=i<0||!lrc[i].text?'♪  ♪  ♪':lrc[i].text;$('#pln').textContent=(lrc[i+1]||{}).text||''}
 /* ================= Transiciones suaves ================= */
 let fadeTok=0,fadeInNext=false;const baseVol=()=>state.settings.vol||1;
 function fadeTo(v,ms){const tok=++fadeTok;const from=audio.volume;const t0=performance.now();
@@ -1506,6 +1520,20 @@ async function setPlayerBg(t){const el=$('#pbg');const u=await coverURL(t.coverI
  catch(e){if(cur()===t)el.style.backgroundImage=`url("${u}")`}}
 function warmIds(ts){if(!NATIVE||!window.OndasBridge||!OndasBridge.plugin)return;const ids=ts.filter(t=>t&&t.source==='yt'&&!t.offline).map(t=>t.rid).slice(0,5);if(ids.length)OndasBridge.plugin.warm({ids}).catch(()=>{})}
 document.addEventListener('touchstart',e=>{const r=e.target.closest&&e.target.closest('[data-act=play][data-ctx]');if(!r)return;const c=state.ctx[r.dataset.ctx];if(c)warmIds([state.byId.get(c.ids[+r.dataset.i])])},{passive:true});
+/* ================= Indicador de carga ================= */
+function setBuffering(b){PL.classList.toggle('buffering',!!b);$('#mini').classList.toggle('buffering',!!b)}
+onAudio('waiting',()=>{if(wantPlay)setBuffering(true)});onAudio('playing',()=>setBuffering(false));onAudio('canplaythrough',()=>{if(!audio.paused)setBuffering(false)});onAudio('pause',()=>setBuffering(false));onAudio('error',()=>setBuffering(false));
+/* ================= Actualizaciones ================= */
+const APP_VER=parseInt('__APP_VERSION__')||0;
+function openExternal(url){if(NATIVE&&OndasBridge.plugin&&OndasBridge.plugin.openUrl)OndasBridge.plugin.openUrl({url}).catch(()=>{location.href=url});else window.open(url,'_blank')}
+async function checkUpdate(manual){if(!NATIVE&&!manual)return;
+ try{const j=await getJSON('https://api.github.com/repos/ElBryan-dev/Ondas/releases/latest');const n=parseInt(String(j.tag_name||'').split('.').pop())||0;
+  const asset=(j.assets||[]).find(a=>/\.apk$/i.test(a.name));
+  if(n>APP_VER&&asset){state.update={v:n,url:asset.browser_download_url};showUpdate()}else if(manual)toast(`Tienes la última versión (1.${APP_VER})`)}
+ catch(e){if(manual)toast('No se pudo comprobar si hay actualizaciones')}}
+function showUpdate(){const u=state.update;if(!u||$('#upd'))return;const el=document.createElement('div');el.id='upd';
+ el.innerHTML=`<div class="tx"><b>Nueva versión 1.${u.v}</b><span>Toca para descargarla e instalarla</span></div><button class="btn sm" data-act="doupd">Actualizar</button><button class="ib" data-act="closeupd" aria-label="Cerrar">${ic('close',18)}</button>`;document.body.appendChild(el)}
+Object.assign(A,{doupd:()=>{if(state.update)openExternal(state.update.url);const e=$('#upd');if(e)e.remove()},closeupd:()=>{const e=$('#upd');if(e)e.remove()},chkupd:()=>checkUpdate(true)});
 /* ================= Boot ================= */
 async function boot(){
  const ok=await openDB();
@@ -1519,6 +1547,7 @@ async function boot(){
    if(state.queue.length){const qi=Math.max(0,Math.min(state.queue.indexOf(ss.queue[ss.qi]),state.queue.length-1));loadTrack(qi<0?0:qi,false,ss.t||0)}}}
  else toast('Tu navegador no permite guardar datos: la música se perderá al cerrar',4000);
  render(true);updateUI();
+ setTimeout(()=>checkUpdate(false),2500);
  detectServer().then(()=>{const v=topView();const typing=document.activeElement&&document.activeElement.id==='q';if(!typing&&['home','search'].includes(v.name))render()});
  if(!NATIVE&&'serviceWorker'in navigator&&location.protocol.startsWith('http')){navigator.serviceWorker.register('sw.js').catch(()=>{})}
 }
